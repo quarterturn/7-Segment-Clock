@@ -1,0 +1,7 @@
+A 7-segment clock based on the ATMEGA 328p, MAX7219 led driver, a DS3231 RTC and some old HP calculator common-cathode bubble lens displays.
+
+This project is under development.
+
+The code has not been tested to compile.
+
+You have been warned.
