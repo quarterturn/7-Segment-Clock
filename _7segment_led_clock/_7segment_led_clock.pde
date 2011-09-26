@@ -43,19 +43,19 @@
 #define M_INTRO 0
 #define M_SET_TIME 1
 #define M_SET_DATE 2
-#define M_SET_AL_T 3
-#define M_SET_AL_D 4
-#define M_SET_24_HR 5
-#define M_SET_DST 6
-#define M_SET_DONE 7
-#define NUM_MENUS 7
+#define M_SET_AL 3
+#define M_SET_24_HR 4
+#define M_SET_DST 5
+#define M_SET_DONE 6
+#define NUM_MENUS 6
 
 #define SET_DEFAULTS 3
-// to help remember setting positions
+// to help remember time setting positions
 #define HOURS_SET 0
 #define MINUTES_SET 1
 #define SECONDS_SET 2
 #define PM_SET 3
+// to help remember date setting positions
 #define MONTHS_SET 0
 #define DAYS_SET 1
 #define YEARS_SET 2
@@ -180,11 +180,10 @@ unsigned long previousMillis;
 prog_char menu0[] PROGMEM = "TNYCHRON";
 prog_char menu1[] PROGMEM = "SET TIME";
 prog_char menu2[] PROGMEM = "SET DATE";
-prog_char menu3[] PROGMEM = "SET AL T";
-prog_char menu4[] PROGMEM = "SET AL D";
-prog_char menu5[] PROGMEM = "SET 24HR";
-prog_char menu6[] PROGMEM = "SET DST ";
-prog_char menu7[] PROGMEM = "DONE    ";
+prog_char menu3[] PROGMEM = "SET AL  ";
+prog_char menu4[] PROGMEM = "SET 24HR";
+prog_char menu5[] PROGMEM = "SET DST ";
+prog_char menu6[] PROGMEM = "DONE    ";
 
 
 // array of menu strings stored in flash
@@ -195,12 +194,11 @@ PROGMEM const char *menuStrSet[] = {
   menu3,
   menu4,
   menu5,
-  menu6,
-  menu7
+  menu6
 };
 
 // setup
-void setup()
+void setup(void)
 {
   
   // button setup
@@ -265,8 +263,8 @@ void setup()
   myLord.DstRules(dstMonStart, dstWeekStart, dstMonEnd, dstWeekEnd, 60);
   
   // grab the date and time for use in sun calculations
-  getDate();
-  getTime();
+  getDateRtc();
+  getTimeRtc();
   
   // convert time to dst if enabled
   if (dstEnable)
@@ -281,14 +279,14 @@ void setup()
 //---------------------------------------------------------------------------------------------//
 // main loop
 //---------------------------------------------------------------------------------------------//
-void loop()
+void loop(void)
 {
   // get the time and date
   // if pin 3 interrupt has triggered
   if (displayNow)
   {
-    getTime();
-    getDate();
+    getTimeRtc();
+    getDateRtc();
     
     // convert time to dst if enabled
     if (dstEnable)
@@ -321,8 +319,8 @@ void loop()
     // if pin 3 interrupt has triggered
     if (displayNow)
     {
-      getTime();
-      getDate();
+      getTimeRtc();
+      getDateRtc();
       // convert time to dst if enabled
       if (dstEnable)
       {
@@ -339,7 +337,7 @@ void loop()
     // set button is pressed
     if (setButton.update())
     {
-      if ((setButton.read()) == LOW)
+      if (setButton.read() == LOW)
       {
         // detach the interrupt 
         detachInterrupt(1);
@@ -355,7 +353,7 @@ void loop()
     // on each pass through the timing loop
     if (incButton.update())
     {
-      if (incButton.read()) == LOW)
+      if (incButton.read() == LOW)
       {
         if (showDate == 0)
         {
@@ -423,7 +421,7 @@ void SQWintHandler(void)
 // function setMenu
 // displays the choices for setting the clock
 //---------------------------------------------------------------------------------------------//
-void setMenu()
+void setMenu(void)
 {
   // default menu item is "set time"
   byte menuNum = 1;
@@ -473,12 +471,8 @@ void setMenu()
             setDate();
             return;
             break;
-          case M_SET_AL_T:
-            setAlarmTime();
-            return;
-            break;
-          case M_SET_AL_D:
-            setAlarmDate();
+          case M_SET_AL:
+            setAlarm();
             return;
             break;
           case M_SET_24_HR:
@@ -506,38 +500,32 @@ void setMenu()
 // function setTime
 // sets the time
 //---------------------------------------------------------------------------------------------//
-void setTime()
+void setTime(void)
 {
   // default to the first setting position
   byte setPos = 0;
+  // default to blink off
+  byte blinkOff = 1;
+  // signal to break out of an outer loop from an inner loop
+  byte breakout = 0;
   
-  // get the time and date
-  // so they will be in std time format
-  getDate();
-  getTime();
+  getTimeRtc();
+  getDateRtc();
+    
+  // convert time to dst if enabled
+  if (dstEnable)
+  {
+    myLord.DST(theTime);
+  }
+    
+  // compute the day of week
+  day = myLord.DayOfWeek(theTime);
 
-  // clear the lcd
-  lcd.clear();
-
-  // move the LCD cursor to home
-  lcd.home();
-
-  // print the set time prompt to the display
-  lcd.print("SET TIME AND DATE");
-
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-
-  // turn on the cursor
-  lcd.cursor();
-
-  // set the array indexes to the same position
-  rowPos = 1;
-  colPos = 0;
-
-  // reset the array
-  memset(menuValues, 0, (sizeof(menuValues)/sizeof(menuValues[0])));
-  
+  // load the new time and date into the display buffer
+  updateBuffer();
+  // update the display
+  updateDisplay(0, 7);
+ 
   // array offsets
   // 0 second
   // 1 minute
@@ -546,437 +534,590 @@ void setTime()
   // 4 month
   // 5 year
 
-  // load the time and date values into the setting array
-  // we will break them up into digits as that is how they are stored
-  // tens hours
-  menuValues[TENS_HOURS] = theTime[2] / 10;
-  // ones hours
-  menuValues[ONES_HOURS] = theTime[2] % 10;
-  // tens minutes
-  menuValues[TENS_MINUTES] = theTime[1] / 10;
-  // ones minutes
-  menuValues[ONES_MINUTES] = theTime[1] % 10;
-  // tens seconds
-  menuValues[TENS_SECONDS] = theTime[0] / 10;
-  // ones seconds
-  menuValues[ONES_SECONDS] = theTime[0] % 10;
-  // tens month
-  menuValues[TENS_MONTH] = theTime[4] / 10;
-  // ones month
-  menuValues[ONES_MONTH] = theTime[4] % 10;
-  // tens day
-  menuValues[TENS_DATE] = theTime[3] / 10;
-  // ones day
-  menuValues[ONES_DATE] = theTime[3] % 10;
-  // tens year
-  menuValues[TENS_YEAR] = theTime[5] / 10;
-  // ones year
-  menuValues[ONES_YEAR] = theTime[5] % 10;
-  // the day of week
-  menuValues[THE_DAY] = day;
+  while (1)
+  {
+    // grab now
+    previousMillis = millis()
+    // loop until SCROLL_DELAY has elapsed
+    // toggle blinkOff and if true, blank the current setPos
+    // this will blink the value to be set
+    while (millis() - previousMillis < SCROLL_DELAY)
+    {
+      // the set button moves to the next value to be set
+      // from left to right
+      if (setButton.update())
+      {
+        if (setButton.read() == LOW)
+        {
+          // if we are already at the seconds position
+          // set the time and exit
+          if (setPos == 2)
+  	  {
+  	    setTimeRtc();
+  	    // set the return flag
+            breakout = 1;
+            // exit the timing loop
+            break;
+  	  }
+  	  // otherwise go to the next position
+  	  else
+  	  {
+  	    setPos++;
+  	  }
+        }
+      }
+  
+      // if the up button is pressed,
+      // increment the value
+      if (incButton.update())
+      {
+        if (incButton.read() == LOW)
+        {
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case HOURS_SET:
+              if (theTime[2] < 23)
+              {
+                theTime[2] = theTime[2] + 1;
+              }
+              break;
+            case MINUTES_SET:
+              if (theTime[1] < 59)
+              {
+                theTime[1] = theTime[1] + 1;
+              }
+              break;
+            case SECONDS_SET:
+              if (theTime[0] < 59)
+              {
+                theTime[0] = theTime[0] + 1;
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }    
+      }
+  
+      // if the down button is pressed,
+      // decrement the value
+      if (decButton.update())
+      {
+        if (decButton.read() == LOW)
+        {
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case HOURS_SET:
+              if (theTime[2] > 0)
+              {
+                theTime[2] = theTime[2] - 1;
+              }
+              break;
+            case MINUTES_SET:
+              if (theTime[1] < 0)
+              {
+                theTime[1] = theTime[1] - 1;
+              }
+              break;
+            case SECONDS_SET:
+              if (theTime[0] < 0)
+              {
+                theTime[0] = theTime[0] - 1;
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }
+      }
+      
+      // load the new time and date into the display buffer
+      updateBuffer();
+  
+      // if blinkOff is true, blank the appropriate digits
+      // in the display buffer before updating the display
+      switch (setPos)
+      {
+        case HOURS_SET:
+          displayBuffer[0] = ' ';
+	  displayBuffer[1] = ' ';
+          break;
+        case MINUTES_SET:
+          displayBuffer[2] = ' ';
+	  displayBuffer[3] = ' ';
+          break;
+        case SECONDS_SET:
+          displayBuffer[4] = ' ';
+	  displayBuffer[5] = ' ';
+          break;
+        // otherwise don't do anything
+        default:
+          break;
+      }
+      
+      // update the display
+      updateDisplay(0, 7);
 
-  // write the current time and date data to the lcd
-  displaySettingData(TIME_DATE);
+    } // end of the timing loop
+    
+    // if breakout is true, exit the main loop
+    if (breakout)
+    {
+      break;
+    }
+    
+    // 
+    if (blinkOff)
+    {
+      blinkOff = 1;
+    }
+    else
+    {
+      blinkOff = 0;
+    }    
+    // end of the main loop
+  }
+  
+  // set the time to the rtc
+  setTimeRtc();
+  return;  
+}
 
-  // time setting symbols
-  lcd.setCursor(2,1);
-  lcd.write(':');
-  lcd.setCursor(5,1);
-  lcd.write(':');
-  lcd.setCursor(11,1);
-  lcd.write('/');
-  lcd.setCursor(14,1);
-  lcd.write('/');
-  lcd.setCursor(19,1);
-  lcd.write('*');
+//---------------------------------------------------------------------------------------------//
+// function setDate
+// sets the date
+//---------------------------------------------------------------------------------------------//
+void setDate(void)
+{
+  // default to the first setting position
+  byte setPos = 0;
+  // default to blink off
+  byte blinkOff = 1;
+  // signal to break out of an outer loop from an inner loop
+  byte breakout = 0;
+  
+  getTimeRtc();
+  getDateRtc();
+    
+  // convert time to dst if enabled
+  if (dstEnable)
+  {
+    myLord.DST(theTime);
+  }
+    
+  // compute the day of week
+  day = myLord.DayOfWeek(theTime);
 
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-
-  // set currentValue to match the cursor position
-  currentValue = menuValues[0];
-  colPos = 0;
+  // load the new time and date into the display buffer
+  updateBuffer();
+  // update the display
+  // use 10-17 as that is where updateBuffer stores the date
+  updateDisplay(10, 17);
+ 
+  // array offsets
+  // 0 second
+  // 1 minute
+  // 2 hour
+  // 3 date
+  // 4 month
+  // 5 year
 
   while (1)
   {
-    // if the down button is pressed,
-    // decement the value so long as it is not out of range
-    // and it is in a position allowed to be changed
-    if ((downButton.update()) && (menuMask[TIME_DATE][colPos]))
+    // grab now
+    previousMillis = millis()
+    // loop until SCROLL_DELAY has elapsed
+    // toggle blinkOff and if true, blank the current setPos
+    // this will blink the value to be set
+    while (millis() - previousMillis < SCROLL_DELAY)
     {
-      if (downButton.read() == LOW)
+      // the set button moves to the next value to be set
+      // from left to right
+      if (setButton.update())
       {
-        decValue(TIME_DATE);
-      }
-    }
-
-    // if the up button is pressed,
-    // increment the value so long as it is not more than the value mask
-    if (upButton.update() && menuMask[TIME_DATE][colPos])
-    {
-      if (upButton.read() == LOW)
-      {
-        // more logic to keep values in range
-        switch (colPos)
+        if (setButton.read() == LOW)
         {
-          case TENS_HOURS:
-            if (checkHourValue())
-            {
-              currentValue++;
-            }
+          // if we are already at the seconds position
+          // set the time and exit
+          if (setPos == 2)
+  	  {
+  	    setTimeRtc();
+  	    // set the return flag
+            breakout = 1;
+            // exit the timing loop
             break;
-          case ONES_HOURS:
-            if (checkHourValue())
-            {
-              currentValue++;
-            }
-            break;
-          case TENS_MINUTES:
-            if (checkMinuteValue())
-            {
-              currentValue++;
-            }
-            break;
-          case ONES_MINUTES:
-            if (checkMinuteValue())
-            {
-              currentValue++;
-            }
-            break;
-          case TENS_SECONDS:
-            if (checkSecondValue())
-            {
-              currentValue++;
-            }
-            break;
-          case ONES_SECONDS:
-            if (checkSecondValue())
-            {
-              currentValue++;
-            }
-            break;
-          case TENS_MONTH:
-            if (checkMonthValue())
-            {
-              currentValue++;
-            }
-            break;
-          case ONES_MONTH:
-            if (checkMonthValue())
-            {
-              currentValue++;
-            }
-            break;
-          case TENS_DATE:
-            if (checkDayValue())
-            {
-              currentValue++;
-            }
-            break;
-          case ONES_DATE:
-            if (checkDayValue())
-            {
-              currentValue++;
-            }
-            break;
-          case TENS_YEAR:
-            if (checkYearValue())
-            {
-              currentValue++;
-            }
-            break;
-          case ONES_YEAR:
-            if (checkYearValue())
-            {
-              currentValue++;
-            }
-            break;
-          case THE_DAY:
-            if (currentValue < 7)
-            {
-              currentValue++;
-            }
-            break;
-          case DONE:
-            if (currentValue < 1)
-            {
-              currentValue++;
-            }
-            break;
-          // otherwise don't do anything
-          default:
-            break;
+  	  }
+  	  // otherwise go to the next position
+  	  else
+  	  {
+  	    setPos++;
+  	  }
         }
       }
-      lcd.write(48 + currentValue);
-      // move the cursor back since write moves it to the right
-      lcd.setCursor(colPos,rowPos);
-      // update the menu value array
-      menuValues[colPos] = currentValue;
-    }
-
-    // go right on right button,
-    // unless we are at the end of the array
-    if (rightButton.update())
-    {
-      if (rightButton.read() == LOW)
+  
+      // if the up button is pressed,
+      // increment the value
+      if (incButton.update())
       {
-        moveRight(TIME_DATE);
-      }
-    }
-
-    // go left on left button
-    // unless we are at the end of the array
-    if (leftButton.update())
-    {
-      if (leftButton.read() == LOW)
-      {
-        moveLeft(TIME_DATE);
-      }
-    }
-
-    // if the middle button is pressed,
-    // call function to test if we are on the set field
-    // and return the status of 1 (set) or 0 (ignore)
-    if ((centerButton.update()) && setButton(TIME_DATE))
-    {
-      if (centerButton.read() == LOW)
-      {
-        if (currentValue == 1)
+        if (incButton.read() == LOW)
         {
-          rtcSetTimeDate();
-        }
-        lcd.noCursor();
-        return;
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case MONTHS_SET:
+              if (theTime[4] < 12)
+              {
+                theTime[4] = theTime[4] + 1;
+              }
+              break;
+            case DAYS_SET:
+              if (theTime[3] < 31)
+              {
+                theTime[3] = theTime[3] + 1;
+              }
+              break;
+            case YEARS_SET:
+              if (theTime[5] < 99)
+              {
+                theTime[5] = theTime[5] + 1;
+              }
+              break;
+            case DOW_SET:
+              if (day < 7)
+              {
+                day++;
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }    
       }
+  
+      // if the down button is pressed,
+      // decrement the value
+      if (decButton.update())
+      {
+        if (decButton.read() == LOW)
+        {
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case MONTHS_SET:
+              if (theTime[4] > 0)
+              {
+                theTime[4] = theTime[4] - 1;
+              }
+              break;
+            case DAYS_SET:
+              if (theTime[3] < 0)
+              {
+                theTime[3] = theTime[3] - 1;
+              }
+              break;
+            case YEARS_SET:
+              if (theTime[5] < 0)
+              {
+                theTime[5] = theTime[5] - 1;
+              }
+              break;
+            case DOW_SET:
+              if (day > 0)
+              {
+                day--;
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }
+      }
+      
+      // load the new time and date into the display buffer
+      updateBuffer();
+  
+      // if blinkOff is true, blank the appropriate digits
+      // in the display buffer before updating the display
+      switch (setPos)
+      {
+        case MONTHS_SET:
+          displayBuffer[10] = ' ';
+	  displayBuffer[11] = ' ';
+          break;
+        case DAYS_SET:
+          displayBuffer[12] = ' ';
+	  displayBuffer[13] = ' ';
+          break;
+        case YEARS_SET:
+          displayBuffer[14] = ' ';
+	  displayBuffer[15] = ' ';
+          break;
+        case DOW_SET:
+          displayBuffer[17] = ' ';
+          break;
+        // otherwise don't do anything
+        default:
+          break;
+      }
+      
+      // update the display
+      updateDisplay(10, 17);
+
+    } // end of the timing loop
+    
+    // if breakout is true, exit the main loop
+    if (breakout)
+    {
+      break;
     }
+    
+    // 
+    if (blinkOff)
+    {
+      blinkOff = 1;
+    }
+    else
+    {
+      blinkOff = 0;
+    }    
+    // end of the main loop
   }
+  
+  // set the date to the rtc
+  setDateRtc();
+  return;  
 }
-
 
 //---------------------------------------------------------------------------------------------//
 // function setDstStartEnd
 // sets the DST start and end dates
 //---------------------------------------------------------------------------------------------//
-void setDstStartEnd()
+void setDstStartEnd(void)
 {
-  byte setStatus = 0;
-
-  // clear the lcd
-  lcd.clear();
-
-  // move the LCD cursor to home
-  lcd.home();
-
-  // print the set time prompt to the display
-  lcd.print("SM SW SD EM EW ED ?");
-
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-
-  // turn on the cursor
-  lcd.cursor();
-
-  // set the array indexes to the same position
-  rowPos = 1;
-  colPos = 0;
-
-  // reset the array
-  memset(menuValues, 0, (sizeof(menuValues)/sizeof(menuValues[0])));
-
-  // load the time and date values into the setting array
-  // we will break them up into digits as that is how they are stored
-  // start tens month
-  menuValues[DST_START_MON_TENS] =  dstMonStart / 10;
-  // start ones month
-  menuValues[DST_START_MON_ONES] = dstMonStart % 10;
-  // start tens day
-  menuValues[DST_START_DAY] = dstDowStart;
-  // start ones day
-  menuValues[DST_START_WEEK] = dstWeekStart;
-  // end tens month
-  menuValues[DST_END_MON_TENS] = dstMonEnd / 10;
-  // end ones month
-  menuValues[DST_END_MON_ONES] = dstMonEnd % 10;
-  // end tens day
-  menuValues[DST_END_DAY] = dstDowEnd;
-  // end ones day
-  menuValues[DST_END_WEEK] = dstWeekEnd;
-  // enable
-  menuValues[DST_ENABLE] = dstEnable;
-
-  // write the current dst data to the lcd
-  displaySettingData(DST_START_END);
-
-  // time setting symbols
-  lcd.setCursor(19,1);
-  lcd.write('*');
-
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-
-  // set currentValue to match the cursor position
-  currentValue = menuValues[0];
-  colPos = 0;
+  // default to the first setting position
+  byte setPos = 0;
+  // default to blink off
+  byte blinkOff = 1;
+  // signal to break out of an outer loop from an inner loop
+  byte breakout = 0;
+  
+  // we do not use the updateBuffer routine
+  // start month tens
+  displayBuffer[0] = dstMonStart / 10;
+  // start month ones - add a decimal point
+  displayBuffer[1] = (dstMonStart % 10) + 128;
+  // start week - add a decimal point
+  displayBuffer[2] = dstWeekStart + 128;
+  // end month tens
+  displayBuffer[3] = dstMonEnd / 10;
+  // end month ones - add a decimal point
+  displayBuffer[4] = (dstMonEnd % 10) + 128;
+  // end week - add a decimal point
+  displayBuffer[5] = dstWeekEnd + 128;
+  // a space
+  displayBuffer[6] = ' ';
+  // 1 - enabled, 0 - disabled
+  displayBuffer[7] = dstEnable;
+  
+  // update the display
+  // use 0 - 7
+  updateDisplay(0, 7);
 
   while (1)
   {
-    // if the down button is pressed,
-    // decement the value so long as it is not out of range
-    // and it is in a position allowed to be changed
-    if ((downButton.update()) && (menuMask[DST_START_END][colPos]))
+    // grab now
+    previousMillis = millis()
+    // loop until SCROLL_DELAY has elapsed
+    // toggle blinkOff and if true, blank the current setPos
+    // this will blink the value to be set
+    while (millis() - previousMillis < SCROLL_DELAY)
     {
-      if (downButton.read() == LOW)
+      // the set button moves to the next value to be set
+      // from left to right
+      if (setButton.update())
       {
-        decValue(DST_START_END);
-      }
-    }
-
-    // if the up button is pressed,
-    // increment the value so long as it is not more than the value mask
-    if (upButton.update() && menuMask[DST_START_END][colPos])
-    {
-      if (upButton.read() == LOW)
-      {
-        // more logic to keep values in range
-        switch (colPos)
+        if (setButton.read() == LOW)
         {
-          // limit start month to 12
-          case DST_START_MON_TENS:
-            if (((menuValues[DST_START_MON_TENS] * 10) + menuValues[DST_START_MON_ONES]) < 12)
-            {
-              currentValue++;
-            }
+          // if we are already at the seconds position
+          // set the time and exit
+          if (setPos == DST_ENABLE)
+  	  {
+  	    // set the return flag
+            breakout = 1;
+            // exit the timing loop
             break;
-          case DST_START_MON_ONES:
-            if (((menuValues[DST_START_MON_TENS] * 10) + menuValues[DST_START_MON_ONES]) < 12)
-            {
-              currentValue++;
-            }
-            break;
-            // limit end month to 12 
-          case DST_START_WEEK:
-            if (currentValue < 4)
-            {
-              currentValue++;
-            }
-            break;
-          case DST_START_DAY:
-            if (currentValue < 7)
-            {
-              currentValue++;
-            }
-            break;
-          case DST_END_MON_TENS:
-            if (((menuValues[DST_END_MON_TENS] * 10) + menuValues[DST_END_MON_ONES]) < 12)
-            {
-              currentValue++;
-            }
-            break;
-          case DST_END_MON_ONES:
-            if (((menuValues[DST_END_MON_TENS] * 10) + menuValues[DST_END_MON_ONES]) < 12)
-            {
-              currentValue++;
-            }
-            break;
-          case DST_END_WEEK:
-            if (currentValue < 4)
-            {
-              currentValue++;
-            }
-            break;
-          case DST_END_DAY:
-            if (currentValue < 7)
-            {
-              currentValue++;
-            }
-            break;
-          case DST_ENABLE:
-            if (currentValue < 1)
-            {
-              currentValue++;
-            }
-            break;
-          case DONE:
-            if (currentValue < 1)
-            {
-              currentValue++;
-            }
-            break;
-            // otherwise do nothing
-          default:
-            currentValue++;
+  	  }
+  	  // otherwise go to the next position
+  	  else
+  	  {
+  	    setPos++;
+  	  }
         }
-        lcd.write(48 + currentValue);
-        // move the cursor back since write moves it to the right
-        lcd.setCursor(colPos,rowPos);
-        // update the menu value array
-        menuValues[colPos] = currentValue;
       }
-    }
-
-    // go right on right button,
-    // unless we are at the end of the array
-    if (rightButton.update())
-    {
-      if (rightButton.read() == LOW)
-      {
-        moveRight(DST_START_END);
-      }
-    }
-
-    // go left on left button
-    // unless we are at the end of the array
-    if (leftButton.update())
-    {
-      if (leftButton.read() == LOW)
-      {
-        moveLeft(DST_START_END);
-      }
-    }
-
-    // if the middle button is pressed,
-    // call function to test if we are on the set field
-    // and return the status of 1 (set) or 0 (ignore)
-    if ((centerButton.update()) && setButton(DST_START_END))
-    {
-      if (centerButton.read() == LOW)
-      {
-        if (currentValue == 1)
-        {
-          // reconstruct the values
-          dstMonStart = (menuValues[DST_START_MON_TENS] * 10) + menuValues[DST_START_MON_ONES];
-          dstDowStart = menuValues[DST_START_DAY];
-          dstWeekStart =  menuValues[DST_START_WEEK];
-          dstMonEnd = (menuValues[DST_END_MON_TENS] * 10) + menuValues[DST_END_MON_ONES];
-          dstDowEnd = menuValues[DST_END_DAY];
-          dstWeekEnd =  menuValues[DST_END_WEEK];
-          dstEnable = menuValues[DST_ENABLE];
-          
-          // write the dst change info to the eeprom
-          EEPROM.write(EE_DST_MON_START, dstMonStart);
-          EEPROM.write(EE_DST_DOW_START, dstDowStart);
-          EEPROM.write(EE_DST_WEEK_START, dstWeekStart);
-          EEPROM.write(EE_DST_MON_END, dstMonEnd);
-          EEPROM.write(EE_DST_DOW_END, dstDowEnd);
-          EEPROM.write(EE_DST_WEEK_END, dstWeekEnd);
-          // update dst enable flag
-          dstEnable = menuValues[DST_ENABLE];
-          // write the dst enable flag to eeprom
-          EEPROM.write(EE_DST_ENABLE, dstEnable);
   
-          myLord.TimeZone(timezone * 60);
-          myLord.DstRules(dstMonStart, dstWeekStart, dstMonEnd, dstWeekEnd, 60);
+      // if the up button is pressed,
+      // increment the value
+      if (incButton.update())
+      {
+        if (incButton.read() == LOW)
+        {
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case DST_START_MON:
+              if (dstMonStart < 12)
+              {
+                dstMonStart++;
+              }
+              break;
+            case DST_START_WEEK:
+              if (dstWeekStart < 4)
+              {
+                dstWeekStart++;
+              }
+              break;
+            case DST_END_MON:
+              if (dstMonEnd < 12)
+              {
+                dstMonEnd++;
+              }
+              break;
+            case DST_END_WEEK:
+              if (dstWeekEnd < 4)
+              {
+                dstWeekEnd++;
+              }
+              break;
+            case DST_ENABLE:
+              if (dstEnable < 1)
+              {
+                dstEnable++;
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }    
+      }
+  
+      // if the down button is pressed,
+      // decrement the value
+      if (decButton.update())
+      {
+        if (decButton.read() == LOW)
+        {
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case DST_START_MON:
+              if (dstMonStart > 1)
+              {
+                dstMonStart--;
+              }
+              break;
+            case DST_START_WEEK:
+              if (dstWeekStart > 1)
+              {
+                dstWeekStart--;
+              }
+              break;
+            case DST_END_MON:
+              if (dstMonEnd > 1)
+              {
+                dstMonEnd--;
+              }
+              break;
+            case DST_END_WEEK:
+              if (dstWeekEnd > 1)
+              {
+                dstWeekEnd--;
+              }
+              break;
+            case DST_ENABLE:
+              if (dstEnable > 0)
+              {
+                dstEnable--;
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
         }
-      }             
-      // turn off the cursor
-      lcd.noCursor();
-      // exit the set tz, long and lat function
-      return;
-    } 
-  }
-}
+      }
+      
+      // load the new time and date into the display buffer
+      updateBuffer();
+  
+      // if blinkOff is true, blank the appropriate digits
+      // in the display buffer before updating the display
+      switch (setPos)
+      {
+        case DST_START_MON:
+          displayBuffer[0] = ' ';
+	  displayBuffer[1] = ' ' + 128;
+          break;
+        case DST_START_WEEK:
+          displayBuffer[2] = ' ' + 128;
+          break;
+        case DST_END_MON:
+          displayBuffer[3] = ' ';
+	  displayBuffer[4] = ' ' + 128;
+          break;
+        case DST_END_WEEK:
+          displayBuffer[5] = ' ';
+          break;
+        case DST_ENABLE:
+          displayBuffer[7] = ' ';
+          break;
+        // otherwise don't do anything
+        default:
+          break;
+      }
+      
+      // update the display
+      updateDisplay(0, 7);
 
+    } // end of the timing loop
+    
+    // if breakout is true, exit the main loop
+    if (breakout)
+    {
+      break;
+    }
+    
+    // 
+    if (blinkOff)
+    {
+      blinkOff = 1;
+    }
+    else
+    {
+      blinkOff = 0;
+    }    
+    // end of the main loop
+  }
+  
+  // write the dst dates to the eeprom
+  // write the dst change info to the eeprom
+  EEPROM.write(EE_DST_MON_START, dstMonStart);
+  EEPROM.write(EE_DST_WEEK_START, dstWeekStart);
+  EEPROM.write(EE_DST_MON_END, dstMonEnd);
+  EEPROM.write(EE_DST_WEEK_END, dstWeekEnd);
+  // write the dst enable flag to eeprom
+  EEPROM.write(EE_DST_ENABLE, dstEnable);
+  // update the dst calculation with the new values
+  myLord.TimeZone(timezone * 60);
+  myLord.DstRules(dstMonStart, dstWeekStart, dstMonEnd, dstWeekEnd, 60);
+  return;  
+}
 
 //---------------------------------------------------------------------------------------------//
 // function set1224Mode
@@ -1147,181 +1288,12 @@ void set1224Mode()
   }
 }
 
-
 //---------------------------------------------------------------------------------------------//
-// function setMenu
-// displays the choices for setting the clock
-//---------------------------------------------------------------------------------------------//
-void setMenu()
-{
-  char currentString[20];
-  byte menuNum = 0;
-  
-  // turn on the lcd
-  lcd.display();
-
-  // clear the lcd
-  lcd.clear();
-
-  // move the LCD cursor to home
-  lcd.home();
-
-  // default to time and date menu
-  strcpy_P(currentString, (char*)pgm_read_word(&(menuStrSet[menuNum])));
-
-  // print the menu to the LCD
-  lcd.print(currentString);
-
-
-  // loop until exit
-  while (1)
-  {
-    // down button goes to previous menu unless already there
-    if (downButton.update() && (menuNum > 0))
-    {
-      if (downButton.read() == LOW)
-      {
-        menuNum--;
-        strcpy_P(currentString, (char*)pgm_read_word(&(menuStrSet[menuNum])));
-        lcd.clear();
-        lcd.home();
-        lcd.print(currentString);
-      }
-    }
-    // up button goes to next menu unless already at last one
-    if (upButton.update() && (menuNum < NUM_MENUS))
-    {
-      if (upButton.read() == LOW)
-      {
-        menuNum++;
-        strcpy_P(currentString, (char*)pgm_read_word(&(menuStrSet[menuNum])));
-        lcd.clear();
-        lcd.home();
-        lcd.print(currentString);
-      }
-    }
-    // center button selects the current menu choice
-    if (centerButton.update())
-    {
-      if (centerButton.read() == LOW)
-      {
-        switch(menuNum)
-        {
-          // set time and date menu
-          // 
-        case TIME_DATE:
-          setTimeDate();
-          lcd.clear();
-          return;
-          break;
-        case TZ_LONG_LAT:
-          setTzLongLat();
-          lcd.clear();
-          return;
-          break;
-        case DST_START_END:
-          setDstStartEnd();
-          lcd.clear();
-          return;
-          break;
-        case DISP_SCHED:
-          setDispSched();
-          lcd.clear();
-          return;
-          break;
-        case SET_12_24_MODE:
-          set1224Mode();
-          lcd.clear();
-          return;
-          break;
-        case SET_DEFAULTS:
-          setDefaults();
-          lcd.clear();
-          return;
-          break;
-          // exit setting mode
-        case 6:
-          lcd.clear();
-          return;
-          break;
-        }
-      }
-    } 
-  } 
-}
-
-//---------------------------------------------------------------------------------------------//
-// function rtcSetTimeDate
-// sets the time and date on the DS3231 RTC
-// uses the global menuValues for index TIME_DATE to re-assemble each digit into the data
-//---------------------------------------------------------------------------------------------//
-void rtcSetTimeDate()
-{ 
-  // array offsets
-  // 0 second
-  // 1 minute
-  // 2 hour
-  // 3 date
-  // 4 month
-  // 5 year
-  
-  // reassemble the values
-  theTime[2] = 10 * menuValues[TENS_HOURS] + menuValues[ONES_HOURS];
-  theTime[1] = 10 * menuValues[TENS_MINUTES] + menuValues[ONES_MINUTES];
-  theTime[0] = 10 * menuValues[TENS_SECONDS] + menuValues[ONES_SECONDS];
-  theTime[4] = 10 * menuValues[TENS_MONTH] + menuValues[ONES_MONTH];
-  theTime[3] = 10 * menuValues[TENS_DATE] + menuValues[ONES_DATE];
-  theTime[5] = 10 * menuValues[TENS_YEAR] + menuValues[ONES_YEAR];
-  day = menuValues[THE_DAY];
-
-  // send the values to the RTC
-  setDate();
-  setTime();
-  
-  // set the sunRise array
-  sunRise[0] = 0;
-  sunRise[1] = 0;
-  sunRise[2] = 0;
-  sunRise[3] = theTime[3];
-  sunRise[4] = theTime[4];
-  sunRise[5] = theTime[5];
- 
-  // call the SunRise method
-  sunWillRise = myLord.SunRise(sunRise);
-  
-  // set the sunSet array
-  sunSet[0] = 0;
-  sunSet[1] = 0;
-  sunSet[2] = 0;
-  sunSet[3] = theTime[3];
-  sunSet[4] = theTime[4];
-  sunSet[5] = theTime[5];
-  
-  // call the sunSet method
-  myLord.SunSet(sunSet);
-  
-  // call the MoonPhase method
-  moonPhase = myLord.MoonPhase(sunRise);
-  
-  // calculate noon from sunrise and sunset times
-  calculateNoon();
-  
-  // convert time to dst if enabled
-  if (dstEnable)
-  {
-    myLord.DST(theTime);
-    myLord.DST(sunRise);
-    myLord.DST(sunSet);
-    myLord.DST(theNoon);
-  }
-}
-
-//---------------------------------------------------------------------------------------------//
-// function setDate
+// function setDateRtc
 // sets the date on the DS3231 RTC
 // uses the globals day date month year
 //---------------------------------------------------------------------------------------------//
-void setDate()
+void setDateRtc()
 {
   // array offsets
   // 0 second
@@ -1341,11 +1313,11 @@ void setDate()
 }
 
 //---------------------------------------------------------------------------------------------//
-// function getDate
+// function getDateRtc
 // gets the date from the DS3231 RTC
 // uses the globals day date month year
 //---------------------------------------------------------------------------------------------//
-void getDate()
+void getDateRtc()
 {
   // array offsets
   // 0 second
@@ -1369,11 +1341,11 @@ void getDate()
 }
 
 //---------------------------------------------------------------------------------------------//
-// function setTime
+// function setTimeRtc
 // sets the time on the DS3231 RTC
 // uses the global theTime[]
 //---------------------------------------------------------------------------------------------//
-void setTime()
+void setTimeRtc()
 {
   // array offsets
   // 0 second
@@ -1392,11 +1364,11 @@ void setTime()
 }
 
 //---------------------------------------------------------------------------------------------//
-// function getTime
+// function getTimeRtc
 // gets the time from the DS3231 RTC
 // uses the global theTime[]
 //---------------------------------------------------------------------------------------------//
-void getTime()
+void getTimeRtc()
 {
   // array offsets
   // 0 second
@@ -1418,398 +1390,6 @@ void getTime()
   }
 }
 
-//---------------------------------------------------------------------------------------------//
-// function displayTimeAndDate
-// displays the time and date on the first line of the LCD
-// uses the globals theTime[]
-//---------------------------------------------------------------------------------------------//
-void displayTimeAndDate()
-{
-  char buf[12];
-  
-  byte tmpMin,
-       tmpHr;
-
-  // get the time
-  getTime();
-  // get the date
-  getDate();
-  
-  // convert time to dst if enabled
-  if (dstEnable)
-  {
-    myLord.DST(theTime);
-  }
-
-  // start at upper left
-  lcd.setCursor(0, 0);
-  
-  // array offsets
-  // 0 second
-  // 1 minute
-  // 2 hour
-  // 3 date
-  // 4 month
-  // 5 year
-  
-  // test for display mode change time
-  // if you set them all the same you should stay in bright mode
-  // off
-  if ((theTime[1] == 0) && (theTime[0] == 0) && (theTime[2] == offHour))
-  {
-    lcd.noDisplay();
-  }  
-  // dim
-  if ((theTime[1] == 0) && (theTime[0] == 0) && (theTime[2] == dimHour))
-  {
-    lcd.display();
-    lcd.vfdDim(3);
-  }
-  // bright
-  if ((theTime[1] == 0) && (theTime[0] == 0) && (theTime[2] == brightHour))
-  {
-    // turn on the display
-    lcd.display();
-    lcd.vfdDim(0);
-  }
-  
-  tmpHr = theTime[2];
-  // convert to 12 hour time if set
-  if (is12Hour)
-  {
-    // convert 0 to 12
-    if (tmpHr == 0)
-    {
-      tmpHr = 12;
-    }
-    // if greater than 12 subtract 12
-    if (tmpHr > 12)
-    {
-      tmpHr = tmpHr - 12;
-    }
-  }
-  
-  // print the hour
-  // pad with a zero if less than ten hours 
-  // and 12 hour time is not set 
-  if ((tmpHr < 10) && !(is12Hour))
-  {
-    lcd.print("0");
-  }
-  // if 12 hour time is set pad with space
-  // if the tens hour is less than one
-  if ((tmpHr < 10) && (is12Hour))
-  {
-    lcd.print(" ");
-  }
-    
-  lcd.print(itoa(tmpHr, buf, 10));
-  lcd.print(":");
-
-  // print the minutes
-  // pad with a zero if less than ten minutes
-  if (theTime[1] < 10)
-  {
-    lcd.print("0");
-  }
-  lcd.print(itoa(theTime[1], buf, 10));
-  lcd.print(":");
-
-  // print the seconds
-  // pad with a zero if less than ten seconds
-  if (theTime[0] < 10)
-  {
-    lcd.print("0");
-  }
-  lcd.print(itoa(theTime[0], buf, 10));
-
-  lcd.setCursor(9, 0);
-
-  // print the day of the week
-  switch (day) {
-  case 1:
-    lcd.print("Su");
-    break;
-  case 2:
-    lcd.print("Mo");
-    break;
-  case 3:
-    lcd.print("Tu");
-    break;
-  case 4:
-    lcd.print("We");
-    break;
-  case 5:
-    lcd.print("Th");
-    break;
-  case 6:
-    lcd.print("Fr");
-    break;
-  case 7:
-    lcd.print("Sa");
-    break;
-  }
-
-  lcd.setCursor(12,0);
-
-  // print the month
-  // pad with a zero if less than ten
-  if (theTime[4] < 10)
-  {
-    lcd.print("0");
-  }  
-  lcd.print(itoa(theTime[4], buf, 10));
-  lcd.print("/");
-
-  // print the date
-  // pad with a zero if less than ten
-  if (theTime[3] < 10)
-  {
-    lcd.print("0");
-  }
-  lcd.print(itoa(theTime[3], buf, 10)); 
-
-  // I decided not to have the year displayed
-  // uncomment below if you want it
-
-  //lcd.print("/"); 
-
-  // print the year
-  // pad with a zero if less than ten
-  //  if (year < 10)
-  //  {
-  //    lcd.print("0");
-  //  }
-  //  lcd.print(itoa(year, buf, 10));
-  //  Serial.println("Done displaying time");
-  
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-  
-  // update the sunrise, noon, sunset and moon at 0000:01
-  if ((theTime[2] == 0) && (theTime[2] == 0) && (theTime[0] == 1))
-  {
-    // set the sunRise array
-    sunRise[0] = 0;
-    sunRise[1] = 0;
-    sunRise[2] = 0;
-    sunRise[3] = theTime[3];
-    sunRise[4] = theTime[4];
-    sunRise[5] = theTime[5];
-    
-    // call the SunRise method and get the return result
-    // so we can tell if the sun actually rises
-    sunWillRise = myLord.SunRise(sunRise);
-    
-    // set the sunSet array
-    sunSet[0] = 0;
-    sunSet[1] = 0;
-    sunSet[2] = 0;
-    sunSet[3] = theTime[3];
-    sunSet[4] = theTime[4];
-    sunSet[5] = theTime[5];
-    
-    // call the sunSet method
-    myLord.SunSet(sunSet);
-    
-    // call the MoonPhase method
-    moonPhase = myLord.MoonPhase(sunRise);
-    
-    // calculate noon
-    calculateNoon();
-    
-    // convert time to dst if enabled
-    if (dstEnable)
-    {
-      myLord.DST(sunRise);
-      myLord.DST(sunSet);
-      myLord.DST(theNoon);
-    }
-  }
-  
-  // print the sunrise, sunset and noon if the sun rises
-  if (sunWillRise)
-  {
-    // sunrise up triangle
-    // theTime[2]
-    lcd.write(31);
-    tmpHr = sunRise[2];
-    
-    // convert to 12 hour time if set
-    if (is12Hour)
-    {
-      // convert 0 to 12
-      if (tmpHr == 0)
-      {
-        tmpHr = 12;
-      }
-      // if greater than 12 subtract 12
-      if (tmpHr > 12)
-      {
-        tmpHr = tmpHr - 12;
-      }
-    }
-    
-    if ((tmpHr < 10) && !(is12Hour))
-    {
-      lcd.print('0');
-    }
-    if ((tmpHr < 10) && (is12Hour))
-    {
-      lcd.print(" ");
-    }
-    
-    lcd.print(tmpHr, DEC);
-    // minutes
-    tmpMin = sunRise[1];
-    if (tmpMin < 10)
-    {
-      lcd.print('0');
-    }
-    lcd.print(tmpMin, DEC);
-    
-    // space
-    lcd.write(' ');
-    
-    // sunset down triangle
-    // theTime[2]
-    lcd.write(28);
-    tmpHr = sunSet[2];
-    
-    // convert to 12 hour time if set
-    if (is12Hour)
-    {
-      // convert 0 to 12
-      if (tmpHr == 0)
-      {
-        tmpHr = 12;
-      }
-      // if greater than 12 subtract 12
-      if (tmpHr > 12)
-      {
-        tmpHr = tmpHr - 12;
-      }
-    }
-    
-    if ((tmpHr < 10) && !(is12Hour))
-    {
-      lcd.print('0');
-    }
-    if ((tmpHr < 10) && (is12Hour))
-    {
-      lcd.print(" ");
-    }
-    
-    lcd.print(tmpHr, DEC);
-    // minutes
-    tmpMin = sunSet[1];
-    if (tmpMin < 10)
-    {
-      lcd.print('0');
-    }
-    lcd.print(tmpMin, DEC);
-    
-    // space
-    lcd.print(' ');
-    
-    // noon
-    lcd.write(148);
-   
-    tmpHr = theNoon[2];
-    
-    // convert to 12 hour time if set
-    if (is12Hour)
-    {
-      // convert 0 to 12
-      if (tmpHr == 0)
-      {
-        tmpHr = 12;
-      }
-      // if greater than 12 subtract 12
-      if (tmpHr > 12)
-      {
-        tmpHr = tmpHr - 12;
-      }
-    }
-    
-    if ((tmpHr < 10) && !(is12Hour))
-    {
-      lcd.print('0');
-    }
-    if ((tmpHr < 10) && (is12Hour))
-    {
-      lcd.print(" ");
-    }
-    
-    lcd.print(tmpHr, DEC);
-    
-    // minutes
-    if (theNoon[1] < 10)
-    {
-      lcd.print('0');
-    }
-    lcd.print(theNoon[1], DEC);    
-  }
-  // otherwise signify the sun is not rising
-  else
-  {
-    lcd.write(31);
-    lcd.print("--:-- ");
-    lcd.write(28);
-    lcd.print("--:-- ");
-    lcd.write(148);
-    lcd.print("--:-- ");
-  }
-  
-  // space
-  lcd.print(' ');
-  
-  // moon phase
-  if (moonPhase == 0)
-  {
-    lcd.write(149);
-  }
-  if ((moonPhase < 0.15) && (moonPhase > 0))
-  {
-    lcd.write(24);
-  }
-  if ((moonPhase < 0.25) && (moonPhase >= 0.15))
-  {
-    lcd.write(23);
-  }
-  if ((moonPhase < 0.35) && (moonPhase >= 0.25))
-  {
-    lcd.write(22);
-  }
-  if ((moonPhase < 0.45) && (moonPhase >= 0.35))
-  {
-    lcd.write(21);
-  }
-  if ((moonPhase < 0.55) && (moonPhase >= 0.45))
-  {
-    lcd.write(20);
-  }
-  if ((moonPhase < 0.65) && (moonPhase >= 0.55))
-  {
-    lcd.write(19);
-  }
-  if ((moonPhase < 0.75) && (moonPhase >= 0.65))
-  {
-    lcd.write(18);
-  }
-  if ((moonPhase < 0.85) && (moonPhase >= 0.75))
-  {
-    lcd.write(17);
-  }
-  if ((moonPhase < 0.95) && (moonPhase >= 0.85))
-  {
-    lcd.write(16);
-  }
-  if (moonPhase >= 0.95)
-  {
-    lcd.write(149);
-  }
-}
 
 //---------------------------------------------------------------------------------------------//
 // function decToBcd
@@ -1848,83 +1428,24 @@ void SQWEnable()
 //---------------------------------------------------------------------------------------------//
 void setDefaults()
 {
-  int defLat = 3587;
-  int defLong = -7878;
-  
   // timezone and dst info
   EEPROM.write(EE_TIME_ZONE, -5);
   EEPROM.write(EE_DST_MON_START, 3);
-  EEPROM.write(EE_DST_DOW_START, 1);
   EEPROM.write(EE_DST_WEEK_START, 1);
   EEPROM.write(EE_DST_MON_END, 10);
-  EEPROM.write(EE_DST_DOW_END, 1);
   EEPROM.write(EE_DST_WEEK_END, 1);
-  EEPROM.write(EE_DST_CHANGE_HOUR, 2);
   EEPROM.write(EE_DST_ENABLE, 0);
-  
-      
-  // set regular display mode
-  EEPROM.write(EE_BIG_MODE, 0);
-  bigMode = 0;
-  
-  // set the latitude
-  bu = highByte(defLat);
-  bl = lowByte(defLat);  
-  EEPROM.write(EE_LAT_U, bu);
-  EEPROM.write(EE_LAT_L, bl);
-  // set the longitude
-  bu = highByte(defLong);
-  bl = lowByte(defLong);
-  EEPROM.write(EE_LONG_U, bu);
-  EEPROM.write(EE_LONG_L, bl);
-  // set the bright hour
-  EEPROM.write(EE_BRIGHT_HR, 6);
-  // set the dim hour
-  EEPROM.write(EE_DIM_HR, 21);
-  // set the off hour
-  EEPROM.write(EE_OFF_HR, 1);
-
-  // automatic dst changeover flag
-  EEPROM.write(EE_DST_ENABLE, 1);
   
   // set 24-hour mode
   EEPROM.write(EE_TIME_MODE, 0);
-  
-  lcd.clear();
-  lcd.home();
-  lcd.print("DEFAULTS SET");
-  delay(2000);
-  lcd.clear();
+
+  // set alarm
+  EEPROM.write(EE_AL_HR, 6);
+  EEPROM.write(EE_AL_MIN, 0);
+  // alarm is off
+  EEPROM.write(EE_AL_MODE, 0);
 }
 
-//---------------------------------------------------------------------------------------------//
-// function calculateNoon
-// calculates noon from sunRise and sunSet
-//---------------------------------------------------------------------------------------------//
-void calculateNoon()
-{
-  int setMin,
-      riseMin,
-      aMin;
-      
-  // sunset time in minutes from 0000
-  setMin = sunSet[2] * 60 + sunSet[1];
- 
-  // sunrise time in minutes from 0000
-  riseMin = sunRise[2] * 60 + sunRise[1];
- 
-  // take the average between sunrise and sunset
-  aMin = (setMin + riseMin) / 2;
-  
-  theNoon[2] = aMin / 60;
-  theNoon[1] = aMin % 60;
-  
-  // fill in the date from sunRise
-  theNoon[3] = sunRise[3];
-  theNoon[4] = sunRise[4];
-  theNoon[5] = sunRise[5];
-  
-}
 
 
 //---------------------------------------------------------------------------------------------//
@@ -1943,7 +1464,6 @@ void calculateNoon()
 //---------------------------------------------------------------------------------------------//
 // function updateBuffer()
 // updates the display buffer with the time and date
-
 //---------------------------------------------------------------------------------------------//
 void updateBuffer()
 {
@@ -2053,3 +1573,33 @@ void updateBuffer()
   displayBuffer[16] = ' ';
   
   // day of week 1-7
+  displayBuffer[17] = day;
+}
+
+//---------------------------------------------------------------------------------------------//
+// function updateDisplay()
+// updates the display based on the left and right displayBuffer positions
+//---------------------------------------------------------------------------------------------//
+void updateDisplay(byte bL, byte bR)
+{
+  byte r;
+  byte n = 7;
+  char c;
+  byte dp = 0;
+
+  for (r = bl; r < (br + 1); r++)
+  {
+    c = displayBuffer[r];
+    if (c > 127)
+    {
+      c = c - 128;
+      dp = 1;
+    }
+    else
+    {
+      dp = 0;
+    }
+    lc.setChar(0, n, r, dp);
+    n--;
+  }
+}
