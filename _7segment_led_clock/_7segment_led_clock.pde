@@ -531,14 +531,28 @@ void setTime(void)
   byte blinkOff = 0;
   // signal to break out of an outer loop from an inner loop
   byte breakout = 0;
+  // store the hour before possible DST conversion
+  byte dstHr;
+  // offset from DST to STD time
+  // the RTC keeps time in STD time, so this allows
+  // the clock to let the user set the time as it is now
+  // and then adjust it back to STD time, if necessary
+  byte offset = 0;
   
   getTimeRtc();
   getDateRtc();
+  
+  dstHr = theTime[2];
     
   // convert time to dst if enabled
   if (dstEnable)
   {
     myLord.DST(theTime);
+  }
+  
+  if (dstHr != theTime[2])
+  {
+    offset = 1;
   }
     
   // compute the day of week
@@ -706,6 +720,9 @@ void setTime(void)
     }    
     // end of the main loop
   }
+  
+  // apply correction back to STD from DST
+  theTime[2] = theTime[2] - offset;
   
   // set the time to the rtc
   setTimeRtc();
@@ -1179,9 +1196,9 @@ void setAlarm(void)
   // strore the hour for 12 hour adjustment
   byte tmpHr;
   
-  Serial.println(alarmHr, DEC);
-  Serial.println(alarmMin, DEC);
-  Serial.println(alarmMode, DEC);
+  //Serial.println(alarmHr, DEC);
+  //Serial.println(alarmMin, DEC);
+  //Serial.println(alarmMode, DEC);
   
   
   tmpHr = alarmHr;
