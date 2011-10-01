@@ -1,7 +1,15 @@
 A 7-segment clock based on the ATMEGA 328p, MAX7219 led driver, a DS3231 RTC and some old HP calculator common-cathode bubble lens displays.
 
-This project is under development.
-
-The code has not been tested to compile.
-
-You have been warned.
+Clock features:
+- displays time: hh.mm.ss A.
+  if 12-hour, shows A or P
+  if alarm set, shows . in the A/P position
+- displays date: mm.dd.yy D
+  shows the day of week 1-7 at D
+- when the date display is selected, the time scrolls over while still keeping time to reveal the date, pauses, and then scrolls back
+- during set mode, the selected value blinks
+- allows for start/stop schedule for DST, as well as disabling DST conversion
+- DST conversion also works during time set; if in DST, the time is converted back to STD for the RTC
+- RTC stores time in STD local time
+- alarm function allows none, weekends, weekdays and all days schedule
+ * note - alarm sound functionality not yet implemented
