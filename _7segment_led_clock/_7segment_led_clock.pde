@@ -1,6 +1,6 @@
 /* teeny led clock
  
- Keeps time using a DS3231 RTC chip.
+ Keeps time using a DS1307 or DS3231 RTC chip.
  
  The clock is controlled via a three button interface.
  
@@ -14,7 +14,7 @@
  
  Digital pins used:
  3 INT/SQW from DS3231 (active-low, set internal pull-up)
- 10, 11, 12 for the LCD
+ 10, 11, 12 for the MAX7219
  6, 7, 8 for buttons (active-low; set internal pull-ups to avoid external pull-down)
  
  Analog pins used:
@@ -46,8 +46,9 @@
 #define M_SET_AL 3
 #define M_SET_24_HR 4
 #define M_SET_DST 5
-#define M_SET_DONE 6
-#define NUM_MENUS 6
+#define M_SET_DEFAULTS 6
+#define M_SET_DONE 7
+#define NUM_MENUS 7
 
 #define SET_DEFAULTS 3
 // to help remember time setting positions
@@ -60,6 +61,10 @@
 #define DAYS_SET 1
 #define YEARS_SET 2
 #define DOW_SET 3
+// to help remember alarm setting positions
+#define AL_HOURS_SET 0
+#define AL_MINUTES_SET 1
+#define AL_DAY_SET 2
 // to help remember for dst settings
 #define DST_START_MON 0
 #define DST_START_WEEK 1
@@ -75,32 +80,31 @@
 #define EE_DST_WEEK_END 3
 #define EE_TIME_MODE 4
 #define EE_DST_ENABLE 5
-#define EE_TIME_MODE 6
-#define EE_AL_HR 7
-#define EE_AL_MIN 8
-#define EE_AL_MODE 9
+#define EE_AL_HR 9
+#define EE_AL_MIN 10
+#define EE_AL_MODE 11
 
 // how long to display the date
 // 5 seconds
-#define DATE_DELAY 5000
+#define DATE_DELAY 3000
 
 // how long to wait between scroll steps
 // 250 mS
-#define SCROLL_DELAY 250
+#define SCROLL_DELAY 200
 
 // left side window rightmost scroll limit in display buffer
-#define DW_D_L_LIMIT 10
+#define RIGHT_LIMIT 10
 // left side window leftmost scroll limit in display buffer
-#define DW_T_L_LIMIT 0
+#define LEFT_LIMIT 0
 
 //i2c address of ds3231
 #define DS3231_I2C_ADDRESS 0x68
 
 // button setup - bounce objects
 // 10 msec debounce interval
-Bounce setButton = Bounce(6, 10);
-Bounce decButton = Bounce(7, 10);
-Bounce incButton = Bounce(8, 10);
+Bounce setButton = Bounce(6, 25);
+Bounce decButton = Bounce(7, 25);
+Bounce incButton = Bounce(8, 25);
 
 // daylight savings time start and stop
 byte dstMonStart;
@@ -111,8 +115,6 @@ byte dstDowEnd = 1;
 byte dstWeekEnd;
 byte dstChangeHr = 23;
 byte dstEnable = 1;
-// timezone
-int timezone;
 // 12 hour mode flag
 byte is12Hour;
 
@@ -154,13 +156,13 @@ TimeLord myLord;
 LedControl lc=LedControl(12,11,10,1);
 
 // flag if time is ready per pin 3 interrupt
-byte displayNow = 0;
+volatile byte displayNow = 0;
 
 // track if date should be shown
 byte showDate = 0;
 
 // 16 character display buffer
-byte dispBuffer[18];
+char displayBuffer[18];
 
 // there are 8 digits to the LED display
 // therefore we use an 8 character window from the display buffer
@@ -183,7 +185,8 @@ prog_char menu2[] PROGMEM = "SET DATE";
 prog_char menu3[] PROGMEM = "SET AL  ";
 prog_char menu4[] PROGMEM = "SET 24HR";
 prog_char menu5[] PROGMEM = "SET DST ";
-prog_char menu6[] PROGMEM = "DONE    ";
+prog_char menu6[] PROGMEM = "SET DFLT";
+prog_char menu7[] PROGMEM = "DONE    ";
 
 
 // array of menu strings stored in flash
@@ -194,12 +197,15 @@ PROGMEM const char *menuStrSet[] = {
   menu3,
   menu4,
   menu5,
-  menu6
+  menu6,
+  menu7
 };
 
 // setup
 void setup(void)
 {
+  // set up the serial port
+  Serial.begin(SERIAL_BAUD);
   
   // button setup
   // enable internal pull-ups
@@ -211,7 +217,8 @@ void setup(void)
   digitalWrite(8, HIGH);
   
   // pin 3 set interrupt on SQW
-  pinMode(SQW_PIN, INPUT);
+  pinMode(3, INPUT);
+  digitalWrite(3, HIGH);
   attachInterrupt(1, SQWintHandler, FALLING);
   
   // turn on the max7219
@@ -220,7 +227,6 @@ void setup(void)
   lc.setIntensity(0,12);
   // clear the display
   lc.clearDisplay(0);
-}
 
   // timezone and dst info
   dstMonStart = EEPROM.read(EE_DST_MON_START);
@@ -229,17 +235,14 @@ void setup(void)
   dstWeekEnd = EEPROM.read(EE_DST_WEEK_END);
   dstEnable = EEPROM.read(EE_DST_ENABLE);
   is12Hour = EEPROM.read(EE_TIME_MODE);
-  timezone = EEPROM.read(EE_TIME_ZONE);
-  if (timezone > 127)
-  {
-    timezone = (256 - timezone) * -1;
-  }
+ 
   alarmHr = EEPROM.read(EE_AL_HR);
   alarmMin = EEPROM.read(EE_AL_MIN);
   alarmMode = EEPROM.read(EE_AL_MODE);
   
   // display version and contact info
   intro();
+  lc.clearDisplay(0);
 
   // clear /EOSC bit
   // Sometimes necessary to ensure that the clock
@@ -256,9 +259,6 @@ void setup(void)
   // the function sets it to 1 HZ
   SQWEnable();
   
-  // TimeLord library configuration
-  // set timezone
-  myLord.TimeZone(timezone * 60);
   // set dst rules
   myLord.DstRules(dstMonStart, dstWeekStart, dstMonEnd, dstWeekEnd, 60);
   
@@ -285,6 +285,7 @@ void loop(void)
   // if pin 3 interrupt has triggered
   if (displayNow)
   {
+    ////Serial.println("SQW interrupt");
     getTimeRtc();
     getDateRtc();
     
@@ -302,6 +303,8 @@ void loop(void)
     // load the new time and date into the display buffer
     updateBuffer();
   }
+  
+  ////Serial.println("tick...");
   
   // update the display from the buffer based on the display window
   updateDisplay(dwL, dwR);
@@ -339,72 +342,80 @@ void loop(void)
     {
       if (setButton.read() == LOW)
       {
-        // detach the interrupt 
-        detachInterrupt(1);
         // enter set mode
         setMenu();
-        // put the interrupt back on return
-        attachInterrupt(1, SQWintHandler, FALLING);
       }
     }
     
-    // if incButton is pressed
+    // if incButton was pressed
     // set the flag to start moving the display window rightward
-    // on each pass through the timing loop
+    // on each exit from the timing loop
     if (incButton.update())
     {
       if (incButton.read() == LOW)
       {
+        //Serial.println("date button");
         if (showDate == 0)
         {
           showDate = 1;
         }
       }
     }
+  }
+  // end of timing loop
+  
+  // increment the display window if showDate is 1
+  if (showDate == 1)
+  {
+    // if we have not reached the final rightmost position for the date
+    // keep incrementing the window position
+    if (dwL < RIGHT_LIMIT)
+    {
+      //Serial.print("incrementing ");
+      //Serial.println(dwL, DEC);
+      dwL++;
+      dwR++;
+    }
+    // if we have scrolled the display window all the way to the right
+    // decrement the dateDelay on every pass through the timing loop
+    // this will pause the display on the date
+    if ((dwL == RIGHT_LIMIT) && (dateDelay > 0))
+    {
+      //Serial.print("holding ");
+      //Serial.println(dwL, DEC);
+      dateDelay = dateDelay - 250;
+    }
     
-    // increment the display window if showDate is 1
-    if (showDate == 1)
+    // once the delay is used up scroll back
+    if ((dwL == RIGHT_LIMIT) && (dateDelay == 0))
     {
-      // if we have not reached the final rightmost position for the date
-      // keep incrementing the window position
-      if (dwL < DW_D_L_LIMIT)
-      {
-        dwL++;
-        dwR++;
-      }
-      // if we have scrolled the display window all the way to the right
-      // decrement the dateDelay on every pass through the timing loop
-      // this will pause the display on the date
-      if ((dwL == DW_D_L_LIMIT) && (dateDelay > 0))
-      {
-        dateDelay = dateDelay - 250;
-      }
-      if ((dwL = DW_D_L_LIMIT) && (dateDelay == 0))
-      {
-        dwL--;
-        dwR--;
-        showDate = 2;
-      }
+      //Serial.print("hold time expired ");
+      //Serial.println(dwL, DEC);
+      showDate = 2;
     }
-    // decrement the display window if showDate is 2
-    if (showDate == 2)
+  }
+  // decrement the display window if showDate is 2
+  if (showDate == 2)
+  {
+    // if we have not reach the final leftmost position for the time
+    // keep decrementing the window position
+    if (dwL > LEFT_LIMIT)
     {
-      // if we have not reach the final leftmost position for the time
-      // keep decrementing the window position
-      if (dwL > DW_T_L_LIMIT)
-      {
-        dwL--;
-        dwR--;
-      }
-      // if we reach the leftmost window limit for the time stop scrolling
-      // and set showDate back to 0
-      if (dwL == DW_T_L_LIMIT)
-      {
-        showDate = 0;
-        dateDelay = DATE_DELAY;
-      }
+      //Serial.print("decrementing ");
+      //Serial.println(dwL, DEC);
+      dwL--;
+      dwR--;
     }
-  }     
+    // if we reach the leftmost window limit for the time stop scrolling
+    // and set showDate back to 0
+    if (dwL == LEFT_LIMIT)
+    {
+      //Serial.print("back to regular ");
+      //Serial.println(dwL, DEC);
+      showDate = 0;
+      dateDelay = DATE_DELAY;
+    }
+  }   
 }
 
 //---------------------------------------------------------------------------------------------//
@@ -427,7 +438,8 @@ void setMenu(void)
   byte menuNum = 1;
 
   // default to time and date menu
-  strcpy_P(dispBuffer, (char*)pgm_read_word(&(menuStrSet[menuNum])));
+  // strcpy_P(currentString, (char*)pgm_read_word(&(menuStrSet[menuNum])));
+  strcpy_P(displayBuffer, (char*)pgm_read_word(&(menuStrSet[menuNum])));
 
   // print the menu to the LED display
   updateDisplay(0, 7);
@@ -442,8 +454,10 @@ void setMenu(void)
       if (decButton.read() == LOW)
       {
         menuNum--;
-        strcpy_P(dispBuffer, (char*)pgm_read_word(&(menuStrSet[menuNum])));
+        strcpy_P(displayBuffer, (char*)pgm_read_word(&(menuStrSet[menuNum])));
         updateDisplay(0, 7);
+        //Serial.print("decButton");
+        //Serial.println(menuNum, DEC);
       }
     }
     // up button goes to next menu unless already at last one
@@ -452,8 +466,10 @@ void setMenu(void)
       if (incButton.read() == LOW)
       {
         menuNum++;
-        strcpy_P(dispBuffer, (char*)pgm_read_word(&(menuStrSet[menuNum])));
+        strcpy_P(displayBuffer, (char*)pgm_read_word(&(menuStrSet[menuNum])));
         updateDisplay(0, 7);
+        //Serial.print("incButton");
+        //Serial.println(menuNum, DEC);
       }
     }
     // center button selects the current menu choice
@@ -461,6 +477,8 @@ void setMenu(void)
     {
       if (setButton.read() == LOW)
       {
+        //Serial.print("setButton");
+        //Serial.println(menuNum, DEC);
         switch(menuNum)
         {
           case M_SET_TIME:
@@ -476,14 +494,18 @@ void setMenu(void)
             return;
             break;
           case M_SET_24_HR:
-            set24Hr();
+            set1224Mode();
             return;
             break;     
           case M_SET_DST:
-            setDst();
+            setDstStartEnd();
             return;
             break;
           case M_SET_DONE:
+            return;
+            break;
+          case M_SET_DEFAULTS:
+            setDefaults();
             return;
             break;
           default:
@@ -492,7 +514,8 @@ void setMenu(void)
         }
       }
     } 
-  } 
+  }
+  return;
 }
 
 
@@ -505,7 +528,7 @@ void setTime(void)
   // default to the first setting position
   byte setPos = 0;
   // default to blink off
-  byte blinkOff = 1;
+  byte blinkOff = 0;
   // signal to break out of an outer loop from an inner loop
   byte breakout = 0;
   
@@ -537,7 +560,7 @@ void setTime(void)
   while (1)
   {
     // grab now
-    previousMillis = millis()
+    previousMillis = millis();
     // loop until SCROLL_DELAY has elapsed
     // toggle blinkOff and if true, blank the current setPos
     // this will blink the value to be set
@@ -617,13 +640,13 @@ void setTime(void)
               }
               break;
             case MINUTES_SET:
-              if (theTime[1] < 0)
+              if (theTime[1] > 0)
               {
                 theTime[1] = theTime[1] - 1;
               }
               break;
             case SECONDS_SET:
-              if (theTime[0] < 0)
+              if (theTime[0] > 0)
               {
                 theTime[0] = theTime[0] - 1;
               }
@@ -640,25 +663,27 @@ void setTime(void)
   
       // if blinkOff is true, blank the appropriate digits
       // in the display buffer before updating the display
-      switch (setPos)
+      if (blinkOff)
       {
-        case HOURS_SET:
-          displayBuffer[0] = ' ';
-	  displayBuffer[1] = ' ';
-          break;
-        case MINUTES_SET:
-          displayBuffer[2] = ' ';
-	  displayBuffer[3] = ' ';
-          break;
-        case SECONDS_SET:
-          displayBuffer[4] = ' ';
-	  displayBuffer[5] = ' ';
-          break;
-        // otherwise don't do anything
-        default:
-          break;
+        switch (setPos)
+        {
+          case HOURS_SET:
+            displayBuffer[0] = ' ';
+  	  displayBuffer[1] = ' ';
+            break;
+          case MINUTES_SET:
+            displayBuffer[2] = ' ';
+  	  displayBuffer[3] = ' ';
+            break;
+          case SECONDS_SET:
+            displayBuffer[4] = ' ';
+  	  displayBuffer[5] = ' ';
+            break;
+          // otherwise don't do anything
+          default:
+            break;
+        }
       }
-      
       // update the display
       updateDisplay(0, 7);
 
@@ -673,11 +698,11 @@ void setTime(void)
     // 
     if (blinkOff)
     {
-      blinkOff = 1;
+      blinkOff = 0;
     }
     else
     {
-      blinkOff = 0;
+      blinkOff = 1;
     }    
     // end of the main loop
   }
@@ -696,7 +721,7 @@ void setDate(void)
   // default to the first setting position
   byte setPos = 0;
   // default to blink off
-  byte blinkOff = 1;
+  byte blinkOff = 0;
   // signal to break out of an outer loop from an inner loop
   byte breakout = 0;
   
@@ -729,7 +754,7 @@ void setDate(void)
   while (1)
   {
     // grab now
-    previousMillis = millis()
+    previousMillis = millis();
     // loop until SCROLL_DELAY has elapsed
     // toggle blinkOff and if true, blank the current setPos
     // this will blink the value to be set
@@ -815,13 +840,13 @@ void setDate(void)
               }
               break;
             case DAYS_SET:
-              if (theTime[3] < 0)
+              if (theTime[3] > 0)
               {
                 theTime[3] = theTime[3] - 1;
               }
               break;
             case YEARS_SET:
-              if (theTime[5] < 0)
+              if (theTime[5] > 0)
               {
                 theTime[5] = theTime[5] - 1;
               }
@@ -844,26 +869,29 @@ void setDate(void)
   
       // if blinkOff is true, blank the appropriate digits
       // in the display buffer before updating the display
-      switch (setPos)
+      if (blinkOff)
       {
-        case MONTHS_SET:
-          displayBuffer[10] = ' ';
-	  displayBuffer[11] = ' ';
-          break;
-        case DAYS_SET:
-          displayBuffer[12] = ' ';
-	  displayBuffer[13] = ' ';
-          break;
-        case YEARS_SET:
-          displayBuffer[14] = ' ';
-	  displayBuffer[15] = ' ';
-          break;
-        case DOW_SET:
-          displayBuffer[17] = ' ';
-          break;
-        // otherwise don't do anything
-        default:
-          break;
+        switch (setPos)
+        {
+          case MONTHS_SET:
+            displayBuffer[10] = ' ';
+  	  displayBuffer[11] = ' ';
+            break;
+          case DAYS_SET:
+            displayBuffer[12] = ' ';
+  	  displayBuffer[13] = ' ';
+            break;
+          case YEARS_SET:
+            displayBuffer[14] = ' ';
+  	  displayBuffer[15] = ' ';
+            break;
+          case DOW_SET:
+            displayBuffer[17] = ' ';
+            break;
+          // otherwise don't do anything
+          default:
+            break;
+        }
       }
       
       // update the display
@@ -880,11 +908,11 @@ void setDate(void)
     // 
     if (blinkOff)
     {
-      blinkOff = 1;
+      blinkOff = 0;
     }
     else
     {
-      blinkOff = 0;
+      blinkOff = 1;
     }    
     // end of the main loop
   }
@@ -903,7 +931,7 @@ void setDstStartEnd(void)
   // default to the first setting position
   byte setPos = 0;
   // default to blink off
-  byte blinkOff = 1;
+  byte blinkOff = 0;
   // signal to break out of an outer loop from an inner loop
   byte breakout = 0;
   
@@ -932,7 +960,7 @@ void setDstStartEnd(void)
   while (1)
   {
     // grab now
-    previousMillis = millis()
+    previousMillis = millis();
     // loop until SCROLL_DELAY has elapsed
     // toggle blinkOff and if true, blank the current setPos
     // this will blink the value to be set
@@ -1054,32 +1082,523 @@ void setDstStartEnd(void)
       }
       
       // load the new time and date into the display buffer
-      updateBuffer();
+      // we do not use the updateBuffer routine
+      // start month tens
+      displayBuffer[0] = dstMonStart / 10;
+      // start month ones - add a decimal point
+      displayBuffer[1] = (dstMonStart % 10) + 128;
+      // start week - add a decimal point
+      displayBuffer[2] = dstWeekStart + 128;
+      // end month tens
+      displayBuffer[3] = dstMonEnd / 10;
+      // end month ones - add a decimal point
+      displayBuffer[4] = (dstMonEnd % 10) + 128;
+      // end week - add a decimal point
+      displayBuffer[5] = dstWeekEnd + 128;
+      // a space
+      displayBuffer[6] = ' ';
+      // 1 - enabled, 0 - disabled
+      displayBuffer[7] = dstEnable;
   
       // if blinkOff is true, blank the appropriate digits
       // in the display buffer before updating the display
-      switch (setPos)
+      if (blinkOff)
       {
-        case DST_START_MON:
-          displayBuffer[0] = ' ';
-	  displayBuffer[1] = ' ' + 128;
+        switch (setPos)
+        {
+          case DST_START_MON:
+            displayBuffer[0] = ' ';
+  	  displayBuffer[1] = ' ' + 128;
+            break;
+          case DST_START_WEEK:
+            displayBuffer[2] = ' ' + 128;
+            break;
+          case DST_END_MON:
+            displayBuffer[3] = ' ';
+  	  displayBuffer[4] = ' ' + 128;
+            break;
+          case DST_END_WEEK:
+            displayBuffer[5] = ' ';
+            break;
+          case DST_ENABLE:
+            displayBuffer[7] = ' ';
+            break;
+          // otherwise don't do anything
+          default:
+            break;
+        }
+      }
+      // update the display
+      updateDisplay(0, 7);
+
+    } // end of the timing loop
+    
+    // if breakout is true, exit the main loop
+    if (breakout)
+    {
+      break;
+    }
+    
+    // 
+    if (blinkOff)
+    {
+      blinkOff = 0;
+    }
+    else
+    {
+      blinkOff = 1;
+    }    
+    // end of the main loop
+  }
+  
+  // write the dst dates to the eeprom
+  // write the dst change info to the eeprom
+  EEPROM.write(EE_DST_MON_START, dstMonStart);
+  EEPROM.write(EE_DST_WEEK_START, dstWeekStart);
+  EEPROM.write(EE_DST_MON_END, dstMonEnd);
+  EEPROM.write(EE_DST_WEEK_END, dstWeekEnd);
+  // write the dst enable flag to eeprom
+  EEPROM.write(EE_DST_ENABLE, dstEnable);
+  // update the dst calculation with the new values
+  myLord.DstRules(dstMonStart, dstWeekStart, dstMonEnd, dstWeekEnd, 60);
+  return;  
+}
+
+//---------------------------------------------------------------------------------------------//
+// function setAlarm
+// sets the alarm
+//---------------------------------------------------------------------------------------------//
+void setAlarm(void)
+{
+  // default to the first setting position
+  byte setPos = 0;
+  // default to blink off
+  byte blinkOff = 0;
+  // signal to break out of an outer loop from an inner loop
+  byte breakout = 0;
+  // strore the hour for 12 hour adjustment
+  byte tmpHr;
+  
+  Serial.println(alarmHr, DEC);
+  Serial.println(alarmMin, DEC);
+  Serial.println(alarmMode, DEC);
+  
+  
+  tmpHr = alarmHr;
+  // convert to 12 hour time if set
+  if (is12Hour)
+  {
+    // convert 0 to 12
+    if (tmpHr == 0)
+    {
+      tmpHr = 12;
+    }
+    // if greater than 12 subtract 12
+    if (tmpHr > 12)
+    {
+      tmpHr = tmpHr - 12;
+    }
+  }  
+  // tens hour
+  displayBuffer[0] = tmpHr / 10;
+  // ones hour
+  // add 128 to indicate dp is on
+  displayBuffer[1] = (tmpHr % 10) + 128;  
+  // if 12 hour time is set pad with space
+  // if the tens hour is less than one
+  if ((tmpHr < 10) && (is12Hour))
+  {
+    displayBuffer[0] = ' ';
+  }
+  // alarm minutes tens
+  displayBuffer[2] = alarmMin / 10;
+  // alarm minutes ones
+  displayBuffer[3] = alarmMin % 10;
+  // a space
+  displayBuffer[4] = ' ';
+  // am/pm indicator if is12Hour
+  // alarm mode
+  // 0 - off
+  // 2 - weekends
+  // 5 - weekdays
+  // 7 - every day
+  displayBuffer[5] = alarmMode;
+  // a space
+  displayBuffer[6] = ' ';
+  // a/p if is12Hour, otherwise space
+  if (is12Hour)
+  {
+    if (alarmHr > 11)
+    {
+      displayBuffer[7] = 'P';
+    }
+    else
+    {
+      displayBuffer[7] = 'A';
+    }
+  }
+  else
+  {
+    displayBuffer[7] = ' ';
+  }
+  
+  // update the display
+  // use 0 - 7
+  updateDisplay(0, 7);
+
+  while (1)
+  {
+    // grab now
+    previousMillis = millis();
+    // loop until SCROLL_DELAY has elapsed
+    // toggle blinkOff and if true, blank the current setPos
+    // this will blink the value to be set
+    while (millis() - previousMillis < SCROLL_DELAY)
+    {
+      // the set button moves to the next value to be set
+      // from left to right
+      if (setButton.update())
+      {
+        if (setButton.read() == LOW)
+        {
+          // if we are already at the seconds position
+          // set the time and exit
+          if (setPos == AL_DAY_SET)
+  	  {
+  	    // set the return flag
+            breakout = 1;
+            // exit the timing loop
+            break;
+  	  }
+  	  // otherwise go to the next position
+  	  else
+  	  {
+  	    setPos++;
+  	  }
+        }
+      }
+  
+      // if the up button is pressed,
+      // increment the value
+      if (incButton.update())
+      {
+        if (incButton.read() == LOW)
+        {
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case AL_HOURS_SET:
+              if (alarmHr < 23)
+              {
+                alarmHr++;
+              }
+              break;
+            case AL_MINUTES_SET:
+              if (alarmMin < 59)
+              {
+                alarmMin++;
+              }
+              break;
+            case AL_DAY_SET:
+              if (alarmMode < 7)
+              {
+                if (alarmMode == 0)
+                {
+                  alarmMode = 2;
+                }
+                else if (alarmMode == 2)
+                {
+                  alarmMode = 5;
+                }
+                else if (alarmMode == 5)
+                {
+                  alarmMode = 7;
+                }
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }    
+      }
+  
+      // if the down button is pressed,
+      // decrement the value
+      if (decButton.update())
+      {
+        if (decButton.read() == LOW)
+        {
+          // test each value and keep in range
+          // test each value and keep in range
+          switch (setPos)
+          {
+            case AL_HOURS_SET:
+              if (alarmHr > 0)
+              {
+                alarmHr--;
+              }
+              break;
+            case AL_MINUTES_SET:
+              if (alarmMin > 0)
+              {
+                alarmMin--;
+              }
+              break;
+            case AL_DAY_SET:
+              if (alarmMode > 0)
+              {
+                if (alarmMode == 7)
+                {
+                  alarmMode = 5;
+                }
+                else if (alarmMode == 5)
+                {
+                  alarmMode = 2;
+                }
+                else if (alarmMode == 2)
+                {
+                  alarmMode = 0;
+                }
+              }
+              break;
+            // otherwise don't do anything
+            default:
+              break;
+          }
+        }
+      }
+      
+      tmpHr = alarmHr;
+      // convert to 12 hour time if set
+      if (is12Hour)
+      {
+        // convert 0 to 12
+        if (tmpHr == 0)
+        {
+          tmpHr = 12;
+        }
+        // if greater than 12 subtract 12
+        if (tmpHr > 12)
+        {
+          tmpHr = tmpHr - 12;
+        }
+      }  
+      // tens hour
+      displayBuffer[0] = tmpHr / 10;
+      // ones hour
+      // add 128 to indicate dp is on
+      displayBuffer[1] = (tmpHr % 10) + 128;  
+      // if 12 hour time is set pad with space
+      // if the tens hour is less than one
+      if ((tmpHr < 10) && (is12Hour))
+      {
+        displayBuffer[0] = ' ';
+      }
+      // alarm minutes tens
+      displayBuffer[2] = alarmMin / 10;
+      // alarm minutes ones
+      displayBuffer[3] = alarmMin % 10;
+      // a space
+      displayBuffer[4] = ' ';
+      // am/pm indicator if is12Hour
+      // alarm mode
+      // 0 - off
+      // 2 - weekends
+      // 5 - weekdays
+      // 7 - every day
+      displayBuffer[5] = alarmMode;
+      // a space
+      displayBuffer[6] = ' ';
+      // a/p if is12Hour, otherwise space
+      if (is12Hour)
+      {
+        if (alarmHr > 11)
+        {
+          displayBuffer[7] = 'P';
+        }
+        else
+        {
+          displayBuffer[7] = 'A';
+        }
+      }
+      else
+      {
+        displayBuffer[7] = ' ';
+      }
+      
+      // if blinkOff is true, blank the appropriate digits
+      // in the display buffer before updating the display
+      if (blinkOff)
+      {
+        switch (setPos)
+        {
+          case AL_HOURS_SET:
+            displayBuffer[0] = ' ';
+  	    displayBuffer[1] = ' ' + 128;
+            break;
+          case AL_MINUTES_SET:
+            displayBuffer[2] = ' ';
+            displayBuffer[3] = ' ';
+            break;
+          case AL_DAY_SET:
+            displayBuffer[5] = ' ';
+            break;
+          // otherwise don't do anything
+          default:
+            break;
+        }
+      }
+      
+      // update the display
+      updateDisplay(0, 7);
+
+    } // end of the timing loop
+ 
+    // if breakout is true, exit the main loop
+    if (breakout)
+    {
+      break;
+    }
+    
+    // 
+    if (blinkOff)
+    {
+      blinkOff = 0;
+    }
+    else
+    {
+      blinkOff = 1;
+    }    
+    // end of the main loop
+  }
+  
+  // write the alarm info to the eeprom
+  EEPROM.write(EE_AL_HR, alarmHr);
+  EEPROM.write(EE_AL_MIN, alarmHr);
+  EEPROM.write(EE_AL_MODE, alarmMode);
+  return;  
+}
+
+
+//---------------------------------------------------------------------------------------------//
+// function set1224Mode
+// displays the choices for 12/24 hour display mode
+//---------------------------------------------------------------------------------------------//
+void set1224Mode()
+{
+  // default to blink off
+  byte blinkOff = 0;
+  // signal to break out of an outer loop from an inner loop
+  byte breakout = 0;
+  
+  // reset the array
+  memset(displayBuffer, ' ', (sizeof(displayBuffer)/sizeof(displayBuffer[0])));
+  
+  // we do not use the updateBuffer routine
+  // alarm hour tens - 12 hour
+  if (is12Hour)
+  {
+    displayBuffer[0] = '1';
+    displayBuffer[1] = '2';
+    displayBuffer[3] = ' ';
+    displayBuffer[4] = 'H';
+    displayBuffer[5] = 'R';
+  }
+  // alarm hour tens - 24 hour
+  else
+  {
+    displayBuffer[0] = '2';
+    displayBuffer[1] = '4';
+    displayBuffer[3] = ' ';
+    displayBuffer[4] = 'H';
+    displayBuffer[5] = 'R';
+  }
+  
+  // update the display
+  // use 0 - 7
+  updateDisplay(0, 7);
+
+  while (1)
+  {
+    // grab now
+    previousMillis = millis();
+    // loop until SCROLL_DELAY has elapsed
+    // toggle blinkOff and if true, blank the current setPos
+    // this will blink the value to be set
+    while (millis() - previousMillis < SCROLL_DELAY)
+    {
+      // the set button moves to the next value to be set
+      // from left to right
+      if (setButton.update())
+      {
+        if (setButton.read() == LOW)
+        {
+          breakout = 1;
           break;
-        case DST_START_WEEK:
-          displayBuffer[2] = ' ' + 128;
-          break;
-        case DST_END_MON:
-          displayBuffer[3] = ' ';
-	  displayBuffer[4] = ' ' + 128;
-          break;
-        case DST_END_WEEK:
-          displayBuffer[5] = ' ';
-          break;
-        case DST_ENABLE:
-          displayBuffer[7] = ' ';
-          break;
-        // otherwise don't do anything
-        default:
-          break;
+        }
+      }
+  
+      // if the up button is pressed,
+      // increment the value
+      if (incButton.update())
+      {
+        if (incButton.read() == LOW)
+        {
+          if (is12Hour)
+          {
+            is12Hour = 0;
+          }
+          else
+          {
+            is12Hour = 1;
+          }
+        }    
+      }
+  
+      // if the down button is pressed,
+      // decrement the value
+      if (decButton.update())
+      {
+        if (decButton.read() == LOW)
+        {
+          if (is12Hour)
+          {
+            is12Hour = 0;
+          }
+          else
+          {
+            is12Hour = 1;
+          }
+        }
+      }
+      
+      // we do not use the updateBuffer routine
+      // alarm hour tens - 12 hour
+      if (is12Hour)
+      {
+        displayBuffer[0] = '1';
+        displayBuffer[1] = '2';
+        displayBuffer[3] = ' ';
+        displayBuffer[4] = 'H';
+        displayBuffer[5] = 'R';
+      }
+      // alarm hour tens - 24 hour
+      else
+      {
+        displayBuffer[0] = '2';
+        displayBuffer[1] = '4';
+        displayBuffer[3] = ' ';
+        displayBuffer[4] = 'H';
+        displayBuffer[5] = 'R';
+      }
+    
+      // if blinkOff is true, blank the appropriate digits
+      // in the display buffer before updating the display
+      if (blinkOff)
+      {
+        displayBuffer[0] = ' ';
+        displayBuffer[1] = ' ';
       }
       
       // update the display
@@ -1096,196 +1615,18 @@ void setDstStartEnd(void)
     // 
     if (blinkOff)
     {
-      blinkOff = 1;
+      blinkOff = 0;
     }
     else
     {
-      blinkOff = 0;
+      blinkOff = 1;
     }    
     // end of the main loop
   }
   
-  // write the dst dates to the eeprom
-  // write the dst change info to the eeprom
-  EEPROM.write(EE_DST_MON_START, dstMonStart);
-  EEPROM.write(EE_DST_WEEK_START, dstWeekStart);
-  EEPROM.write(EE_DST_MON_END, dstMonEnd);
-  EEPROM.write(EE_DST_WEEK_END, dstWeekEnd);
-  // write the dst enable flag to eeprom
-  EEPROM.write(EE_DST_ENABLE, dstEnable);
-  // update the dst calculation with the new values
-  myLord.TimeZone(timezone * 60);
-  myLord.DstRules(dstMonStart, dstWeekStart, dstMonEnd, dstWeekEnd, 60);
-  return;  
-}
-
-//---------------------------------------------------------------------------------------------//
-// function set1224Mode
-// displays the choices for 12/24 hour display mode
-//---------------------------------------------------------------------------------------------//
-void set1224Mode()
-{
-  byte setStatus = 0;
-
-  // clear the lcd
-  lcd.clear();
-
-  // move the LCD cursor to home
-  lcd.home();
-  
-  // reset the array
-  memset(menuValues, 0, (sizeof(menuValues)/sizeof(menuValues[0])));
-
-  // print the set time prompt to the display
-  lcd.print("USE 12 HOUR MODE");
-
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-
-  // turn on the cursor
-  lcd.cursor();
-
-  // set the array indexes to the same position
-  rowPos = 1;
-  colPos = 0;
-  
-  // write the current data to the display 
-  lcd.setCursor(12,1);
-  if (is12Hour)
-  {
-    lcd.print("YES");
-    menuValues[MODE_12_24_HOUR] = 1;
-  }
-  else
-  {
-    lcd.print("NO ");
-    menuValues[MODE_12_24_HOUR] = 0;
-  }
-  lcd.setCursor(19,1);
-  lcd.print('*');
-
-  // move the cursor to the bottom line left side
-  lcd.setCursor(0,1);
-
-  // set currentValue to match the cursor position
-  currentValue = menuValues[0];
-  colPos = 0;
-
-  while (1)
-  {
-    // if the down button is pressed,
-    // decement the value so long as it is not out of range
-    // and it is in a position allowed to be changed
-    if ((downButton.update()) && (menuMask[SET_12_24_MODE][colPos]))
-    {
-      if (downButton.read() == LOW)
-      {
-        // more logic to keep values in range
-        switch (colPos)
-        {    
-          // 12 hour enable position
-          case MODE_12_24_HOUR:
-            if (currentValue > 0)
-            {
-              currentValue--;
-              lcd.print("NO ");
-              lcd.setCursor(colPos,rowPos);
-            }
-            break;
-          // set or not position - done
-          case DONE:
-            if (currentValue > 0)
-            {
-              currentValue++;
-              lcd.print("0");
-              lcd.setCursor(colPos,rowPos);
-            }
-            break;
-          // otherwise do nothing
-          default:
-            break;
-        }
-      }
-    }
-    
-    // if the up button is pressed,
-    // increment the value so long as it is not more than the value mask
-    if (upButton.update() && menuMask[SET_12_24_MODE][colPos])
-    {
-      if (upButton.read() == LOW)
-      {
-        // more logic to keep values in range
-        switch (colPos)
-        {    
-          // 12 hour enable position
-          case MODE_12_24_HOUR:
-            if (currentValue < 1)
-            {
-              currentValue++;
-              lcd.print("YES");
-              lcd.setCursor(colPos,rowPos);
-            }
-            break;
-          // set or not position - done
-          case DONE:
-            if (currentValue < 1)
-            {
-              currentValue++;
-              lcd.print("1");
-              lcd.setCursor(colPos,rowPos);
-            }
-            break;
-          // otherwise do nothing
-          default:
-            break;
-        }
-      }
-    }
- 
-    // go right on right button,
-    // unless we are at the end of the array
-    if (rightButton.update())
-    {
-      if (rightButton.read() == LOW)
-      {
-        moveRight(SET_12_24_MODE);
-      }
-    }
-
-    // go left on left button
-    // unless we are at the end of the array
-    if (leftButton.update())
-    {
-      if (leftButton.read() == LOW)
-      {
-        moveLeft(SET_12_24_MODE);
-      }
-    }
-
-    // if we are on the set position
-    // middle button sets if 1 and discards if 0
-    if ((centerButton.update()) && setButton(SET_12_24_MODE))
-    {
-      if (centerButton.read() == LOW)
-      {
-        if (currentValue == 1)
-        {
-          is12Hour = menuValues[MODE_12_24_HOUR];
-          // write the values to the eeprom
-          EEPROM.write(EE_TIME_MODE, is12Hour);
-          // turn off the cursor
-          lcd.noCursor();
-          // exit the set display schedule
-          return;       
-        }             
-        // turn off the cursor
-        lcd.noCursor();
-        // exit the set display schedule menu
-        return;
-      }
-    } 
-    menuValues[colPos] = currentValue;   
-  }
+  // write the alarm info to the eeprom
+  EEPROM.write(EE_TIME_MODE, is12Hour);
+  return;
 }
 
 //---------------------------------------------------------------------------------------------//
@@ -1429,7 +1770,6 @@ void SQWEnable()
 void setDefaults()
 {
   // timezone and dst info
-  EEPROM.write(EE_TIME_ZONE, -5);
   EEPROM.write(EE_DST_MON_START, 3);
   EEPROM.write(EE_DST_WEEK_START, 1);
   EEPROM.write(EE_DST_MON_END, 10);
@@ -1452,10 +1792,11 @@ void setDefaults()
 // function intro()
 // displays version info
 //---------------------------------------------------------------------------------------------//
- void intro()
+void intro()
 { 
   // grab the intro from flash
-  strcpy_P(dispBuffer, (char*)pgm_read_word(&(menuStrSet[0])));
+  strcpy_P(displayBuffer, (char*)pgm_read_word(&(menuStrSet[0])));
+  ////Serial.println(displayBuffer);
   // display it from the buffer
   updateDisplay(0, 7);
   delay(5000); 
@@ -1506,7 +1847,7 @@ void updateBuffer()
   // tens second
   displayBuffer[4] = theTime[0] / 10;
   // ones second
-  displayBuffer[5] = theTime[0] % 10
+  displayBuffer[5] = theTime[0] % 10;
 
   // a space
   displayBuffer[6] = ' ';
@@ -1518,17 +1859,6 @@ void updateBuffer()
     {
       if (alarmMode > 0)
       {
-        displayBuffer[7] = 'P' + 128;
-      }
-      else
-      {
-        displayBuffer[7] = 'P';
-      }
-    }
-    else
-    {
-      if (alarmMode > 0)
-      {
         displayBuffer[7] = 'A' + 128;
       }
       else
@@ -1536,6 +1866,18 @@ void updateBuffer()
         displayBuffer[7] = 'A';
       }
     }
+    else
+    {
+      if (alarmMode > 0)
+      {
+        displayBuffer[7] = 'P' + 128;
+      }
+      else
+      {
+        displayBuffer[7] = 'P';
+      }
+    }
+  }
   else
   {
     if (alarmMode > 0)
@@ -1584,12 +1926,13 @@ void updateDisplay(byte bL, byte bR)
 {
   byte r;
   byte n = 7;
-  char c;
+  byte c;
   byte dp = 0;
 
-  for (r = bl; r < (br + 1); r++)
+  for (r = bL; r < (bR + 1); r++)
   {
     c = displayBuffer[r];
+    byte cast = (char)c & 0xff;
     if (c > 127)
     {
       c = c - 128;
@@ -1599,7 +1942,7 @@ void updateDisplay(byte bL, byte bR)
     {
       dp = 0;
     }
-    lc.setChar(0, n, r, dp);
+    lc.setChar(0, n, c, dp);
     n--;
   }
 }
