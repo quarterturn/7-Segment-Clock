@@ -1,4 +1,4 @@
-A 7-segment clock based on the ATMEGA 328p, MAX7219 led driver, a DS3231 RTC and some old HP calculator common-cathode bubble lens displays.
+A 7-segment clock based on the ATMEGA 328p, MAX7219 led driver, a DS1307 RTC and some old HP calculator common-cathode bubble lens displays.
 
 Clock features:
 - displays time: hh.mm.ss A.
@@ -12,4 +12,7 @@ Clock features:
 - DST conversion also works during time set; if in DST, the time is converted back to STD for the RTC
 - RTC stores time in STD local time
 - alarm function allows none, weekends, weekdays and all days schedule
- * note - alarm sound functionality not yet implemented
+
+Includes free Nyan Cat alarm tune. Tunes are made with the miditones utility and played via the Playtune library.
+
+Note that though there are three timers on the ATMEGA 328p we use timer0 for millis() so we limit Playtune polyphony to two notes.
