@@ -117,7 +117,7 @@ byte dstWeekStart;
 byte dstMonEnd;
 byte dstDowEnd = 1;
 byte dstWeekEnd;
-byte dstChangeHr = 23;
+byte dstChangeHr = 2;
 byte dstEnable = 1;
 // 12 hour mode flag
 byte is12Hour;
